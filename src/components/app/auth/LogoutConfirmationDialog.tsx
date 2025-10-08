@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { NotificationContext } from '../AppContext';
+import { LogOut } from 'lucide-react';
 
 interface LogoutConfirmationDialogProps {
     onConfirm: () => void;
@@ -33,10 +34,12 @@ export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmati
       <AlertDialogTrigger asChild>
         <Button 
             id="logout-btn"
-            variant="destructive"
+            variant="ghost"
+            size="icon"
             onClick={handleOpen}
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
         >
-            Cerrar Sesión
+            <LogOut className="h-5 w-5" />
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>

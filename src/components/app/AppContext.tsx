@@ -80,14 +80,16 @@ const mapOrderDates = (order: any): Order => ({
 });
 
 const triggerStorageEvent = (key: string, value: any) => {
-    localStorage.setItem(key, JSON.stringify(value));
-    window.dispatchEvent(
-        new StorageEvent('storage', {
-            key: key,
-            newValue: JSON.stringify(value),
-            storageArea: localStorage
-        })
-    );
+    if (typeof window !== 'undefined') {
+        localStorage.setItem(key, JSON.stringify(value));
+        window.dispatchEvent(
+            new StorageEvent('storage', {
+                key: key,
+                newValue: JSON.stringify(value),
+                storageArea: localStorage
+            })
+        );
+    }
 };
 
 
@@ -126,120 +128,76 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const playPaymentNotification = useCallback(() => playAudio(paymentAudio), [playAudio, paymentAudio]);
   const playLogoutNotification = useCallback(() => playAudio(logoutAudio), [playAudio, logoutAudio]);
 
+  const loadDataFromStorage = useCallback(() => {
+    try {
+        const storedRole = sessionStorage.getItem('userRole') as UserRole;
+        if (storedRole) setRoleState(storedRole);
+
+        const storedMenuItems = localStorage.getItem('sotos_menu_items');
+        let loadedMenuItems: MenuItem[];
+        if (storedMenuItems) {
+            loadedMenuItems = JSON.parse(storedMenuItems).map((item: any, index: number) => ({
+                ...item,
+                order: item.order ?? index,
+                isDisabled: item.isDisabled ?? false,
+            }));
+        } else {
+            loadedMenuItems = defaultMenuItems.map((item, index) => ({ ...item, order: index, isDisabled: false }));
+        }
+        setMenuItems(current => JSON.stringify(current) !== JSON.stringify(loadedMenuItems) ? loadedMenuItems : current);
+
+        const storedOrders = localStorage.getItem('sotos_orders');
+        const loadedOrders = storedOrders ? JSON.parse(storedOrders).map(mapOrderDates) : [];
+        setOrders(current => JSON.stringify(current) !== JSON.stringify(loadedOrders) ? loadedOrders : current);
+
+        const storedArchivedOrders = localStorage.getItem('sotos_archived_orders');
+        const loadedArchivedOrders = storedArchivedOrders ? JSON.parse(storedArchivedOrders).map(mapOrderDates) : [];
+        setArchivedOrders(current => JSON.stringify(current) !== JSON.stringify(loadedArchivedOrders) ? loadedArchivedOrders : current);
+        
+        const storedBroadcast = localStorage.getItem('sotos_broadcast_message');
+        const loadedBroadcast = storedBroadcast ? JSON.parse(storedBroadcast) : null;
+        setBroadcastData(current => {
+             if (JSON.stringify(current) !== JSON.stringify(loadedBroadcast)) {
+                if (loadedBroadcast && current?.timestamp !== loadedBroadcast.timestamp && role !== 'jefe') {
+                  playBroadcastNotification();
+                }
+                return loadedBroadcast;
+            }
+            return current;
+        });
+
+    } catch (error) {
+        console.error("Failed to load data from localStorage", error);
+    } finally {
+        if (!isDataLoaded) setIsDataLoaded(true);
+    }
+  }, [isDataLoaded, role, playBroadcastNotification]);
+
+
   // Initialize and load data from localStorage on initial mount
   useEffect(() => {
-    try {
-      // Initialize passwords if not already in localStorage
-      const storedPasswords = localStorage.getItem('sotos_passwords');
-      if (!storedPasswords) {
-        localStorage.setItem('sotos_passwords', JSON.stringify(defaultPasswords));
-      }
-
-      const storedRole = sessionStorage.getItem('userRole') as UserRole;
-      if (storedRole) {
-        setRoleState(storedRole);
-      }
-
-      const storedMenuItems = localStorage.getItem('sotos_menu_items');
-      let loadedMenuItems: MenuItem[];
-      if (storedMenuItems) {
-        // Ensure all items have an order property
-        loadedMenuItems = JSON.parse(storedMenuItems).map((item: any, index: number) => ({
-            ...item,
-            order: item.order ?? index,
-            isDisabled: item.isDisabled ?? false,
-        }));
-      } else {
-        loadedMenuItems = defaultMenuItems.map((item, index) => ({ ...item, order: index, isDisabled: false }));
-        localStorage.setItem('sotos_menu_items', JSON.stringify(loadedMenuItems));
-      }
-      setMenuItems(loadedMenuItems);
-
-      const storedOrders = localStorage.getItem('sotos_orders');
-      if (storedOrders) {
-          setOrders(JSON.parse(storedOrders).map(mapOrderDates));
-      } else {
-          setOrders([]);
-      }
-
-      const storedArchivedOrders = localStorage.getItem('sotos_archived_orders');
-      if (storedArchivedOrders) {
-          setArchivedOrders(JSON.parse(storedArchivedOrders).map(mapOrderDates));
-      } else {
-          setArchivedOrders([]);
-      }
-      
-      const storedBroadcast = localStorage.getItem('sotos_broadcast_message');
-      if (storedBroadcast) {
-          setBroadcastData(JSON.parse(storedBroadcast));
-      }
-
-    } catch (error) {
-      console.error("Failed to load data from localStorage", error);
-      setMenuItems(defaultMenuItems.map((item, index) => ({...item, order: index, isDisabled: false})));
-      setOrders([]);
-      setArchivedOrders([]);
-    } finally {
-      setIsDataLoaded(true);
+    const storedPasswords = localStorage.getItem('sotos_passwords');
+    if (!storedPasswords) {
+      localStorage.setItem('sotos_passwords', JSON.stringify(defaultPasswords));
     }
-  }, []);
+    loadDataFromStorage();
+  }, [loadDataFromStorage]);
 
 
-  // Save data to localStorage whenever it changes
+  // Polling mechanism for robust synchronization
   useEffect(() => {
-    if (!isDataLoaded) return;
-    try {
-      localStorage.setItem('sotos_orders', JSON.stringify(orders));
-      localStorage.setItem('sotos_archived_orders', JSON.stringify(archivedOrders));
-      localStorage.setItem('sotos_menu_items', JSON.stringify(menuItems));
-    } catch (error) {
-      console.error("Failed to save data to localStorage", error);
-    }
-  }, [orders, archivedOrders, menuItems, isDataLoaded]);
+    const interval = setInterval(() => {
+        loadDataFromStorage();
+    }, 15000); // Poll every 15 seconds
 
-  // Listen for storage events from other tabs
-  useEffect(() => {
-    const handleStorageChange = (event: StorageEvent) => {
-       if (event.key === 'sotos_orders' && event.newValue) {
-        const newOrders = JSON.parse(event.newValue).map(mapOrderDates);
-        setOrders(newOrders);
-      }
-      if (event.key === 'sotos_archived_orders' && event.newValue) {
-        const newArchivedOrders = JSON.parse(event.newValue).map(mapOrderDates);
-        setArchivedOrders(newArchivedOrders);
-      }
-       if (event.key === 'sotos_menu_items' && event.newValue) {
-        setMenuItems(JSON.parse(event.newValue));
-      }
-      if (event.key === 'sotos_broadcast_message' && event.newValue) {
-        const newBroadcast = JSON.parse(event.newValue);
-        setBroadcastData(prevData => {
-            if (prevData?.timestamp !== newBroadcast.timestamp) {
-                if (role !== 'jefe') playBroadcastNotification();
-                return newBroadcast;
-            }
-            return prevData;
-        });
-      }
-      // Force logout if password changed
-      if (event.key === 'sotos_password_change_event' && event.newValue) {
-        const { changedRole } = JSON.parse(event.newValue);
-        if (role === changedRole) {
-          toast({
-            title: "Contraseña Actualizada",
-            description: "Tu contraseña ha sido cambiada por el Jefe. Por favor, inicia sesión de nuevo.",
-            variant: "destructive"
-          });
-          setRole(null);
-        }
-      }
-    };
+    window.addEventListener('storage', loadDataFromStorage);
 
-    window.addEventListener('storage', handleStorageChange);
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
+        clearInterval(interval);
+        window.removeEventListener('storage', loadDataFromStorage);
     };
-  }, [role, playBroadcastNotification, toast]);
+  }, [loadDataFromStorage]);
+
   
   const setRole = (newRole: UserRole | null) => {
     setRoleState(newRole);
@@ -297,7 +255,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         if (targetIndex < 0 || targetIndex >= items.length) return prevItems;
         
-        // Swap order properties
         const newItems = [...items];
         const currentItemOrder = newItems[currentIndex].order;
         newItems[currentIndex].order = newItems[targetIndex].order;
@@ -348,21 +305,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return newOrders;
     });
 
-    let orderIdentifier = '';
-    switch (newOrder.type) {
-      case 'mesa':
-        orderIdentifier = `para la mesa ${newOrder.table}`;
-        break;
-      case 'delivery':
-        orderIdentifier = 'para delivery';
-        break;
-      case 'pickup':
-        orderIdentifier = `de ${newOrder.customerName}`;
-        break;
-    }
-
-    if (role !== 'mesero' && role !== 'delivery' && role !== 'jefe') {
-        toast({ title: 'Nuevo Pedido', description: `Ha entrado un nuevo pedido ${orderIdentifier}` });
+    if (role === 'cocina') {
         playOrderNotification();
     }
   };
@@ -409,34 +352,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     if (originalOrder && updates.status && originalOrder.status !== updates.status) {
       const newStatus = updates.status as OrderStatus;
-      let orderIdentifier = '';
-       switch (originalOrder.type) {
-        case 'mesa':
-          orderIdentifier = `Mesa #${originalOrder.table}`;
-          break;
-        case 'delivery':
-          orderIdentifier = `Pedido a Domicilio`;
-          break;
-        case 'pickup':
-          orderIdentifier = `Pedido de ${originalOrder.customerName}`;
-          break;
-      }
       
       const meseroRoles: UserRole[] = ['mesero', 'jefe'];
       const deliveryRoles: UserRole[] = ['delivery', 'jefe'];
 
       if (newStatus === 'lista_para_entrega') {
-        if (originalOrder.type === 'mesa' || originalOrder.type === 'pickup') {
-            if (meseroRoles.includes(role!) && (originalOrder.waiterId === 'mesero1' || role === 'jefe')) {
-                 toast({ title: 'Orden Lista', description: `El pedido de ${orderIdentifier} está listo para ser entregado.` });
-                 playOrderNotification();
-            }
+        if ((originalOrder.type === 'mesa' || originalOrder.type === 'pickup') && meseroRoles.includes(role!)) {
+             playOrderNotification();
         }
-        if (originalOrder.type === 'delivery') {
-            if(deliveryRoles.includes(role!)) {
-                toast({ title: 'Pedido Listo para Delivery', description: `El pedido a domicilio está listo para ser recogido.` });
-                playOrderNotification();
-            }
+        if (originalOrder.type === 'delivery' && deliveryRoles.includes(role!)) {
+            playOrderNotification();
         }
       }
     }
