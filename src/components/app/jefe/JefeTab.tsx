@@ -21,15 +21,15 @@ export default function JefeTab() {
 
   return (
     <>
-      <div className="flex justify-end gap-2 mb-4">
+      <div className="flex flex-col sm:flex-row justify-end items-stretch sm:items-center gap-2 mb-4">
         <BroadcastMessage />
         <PasswordManager />
       </div>
       <Tabs defaultValue="dashboard" className="w-full">
-        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3">
-          <TabsTrigger value="dashboard">Dashboard y Reportes</TabsTrigger>
-          <TabsTrigger value="monitor">Órdenes en Tiempo Real</TabsTrigger>
-          <TabsTrigger value="menu">Gestionar Menú</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+          <TabsTrigger value="monitor">En Vivo</TabsTrigger>
+          <TabsTrigger value="menu">Menú</TabsTrigger>
         </TabsList>
         <TabsContent value="dashboard" className="mt-6">
           <SalesReport orders={orders} />

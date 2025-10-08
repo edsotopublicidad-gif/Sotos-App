@@ -33,6 +33,7 @@ interface AppContextType {
   getDeliveryOrders: (deliveryId: string) => Order[];
   archiveTodaysOrders: () => void;
   clearWaiterSoldOrders: (waiterId: string) => void;
+  clearWaiterCancelledOrders: (waiterId: string) => void;
   clearDeliverySoldOrders: (deliveryId: string) => void;
   clearKitchenCompletedOrders: () => void;
   broadcastMessage: (message: string) => void;
@@ -60,6 +61,7 @@ export const AppContext = createContext<AppContextType>({
   getDeliveryOrders: () => [],
   archiveTodaysOrders: () => {},
   clearWaiterSoldOrders: () => {},
+  clearWaiterCancelledOrders: () => {},
   clearDeliverySoldOrders: () => {},
   clearKitchenCompletedOrders: () => {},
   broadcastMessage: () => {},
@@ -91,27 +93,26 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [broadcastData, setBroadcastData] = useState<{ message: string; timestamp: number } | null>(null);
 
   useEffect(() => {
-    setOrderAudio(new Audio('https://cdn.pixabay.com/download/audio/2025/09/11/audio_1e5c38cd49.mp3?filename=ding-ding-alert-403183.mp3'));
-    setBroadcastAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/10/28/audio_2434180442.mp3?filename=new-notification-020-352772.mp3'));
-    setPaymentAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/03/15/audio_28b4c1a788.mp3?filename=cashier-quotka-chingquot-sound-effect-129698.mp3'));
-    setLogoutAudio(new Audio('https://cdn.pixabay.com/download/audio/2021/08/04/audio_c35a64a665.mp3?filename=bubble-254773.mp3'));
+    // These now use `typeof window !== 'undefined'` to avoid errors on the server
+    if (typeof window !== 'undefined') {
+        setOrderAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/03/10/audio_c31f0c2940.mp3?filename=bell-notification-83342.mp3'));
+        setBroadcastAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/10/28/audio_2434180442.mp3?filename=new-notification-020-352772.mp3'));
+        setPaymentAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/03/15/audio_28b4c1a788.mp3?filename=cashier-quotka-chingquot-sound-effect-129698.mp3'));
+        setLogoutAudio(new Audio('https://cdn.pixabay.com/download/audio/2021/08/04/audio_c35a64a665.mp3?filename=bubble-254773.mp3'));
+    }
   }, []);
 
-  const playOrderNotification = useCallback(() => {
-    orderAudio?.play().catch(error => console.log("Order audio playback failed:", error));
-  }, [orderAudio]);
-  
-  const playBroadcastNotification = useCallback(() => {
-    broadcastAudio?.play().catch(error => console.log("Broadcast audio playback failed:", error));
-  }, [broadcastAudio]);
+  const playAudio = useCallback((audio: HTMLAudioElement | null) => {
+    if (audio) {
+      audio.currentTime = 0; // Rewind to start
+      audio.play().catch(error => console.log("Audio playback failed:", error));
+    }
+  }, []);
 
-  const playPaymentNotification = useCallback(() => {
-    paymentAudio?.play().catch(error => console.log("Payment audio playback failed:", error));
-  }, [paymentAudio]);
-
-  const playLogoutNotification = useCallback(() => {
-    logoutAudio?.play().catch(error => console.log("Logout audio playback failed:", error));
-  }, [logoutAudio]);
+  const playOrderNotification = useCallback(() => playAudio(orderAudio), [playAudio, orderAudio]);
+  const playBroadcastNotification = useCallback(() => playAudio(broadcastAudio), [playAudio, broadcastAudio]);
+  const playPaymentNotification = useCallback(() => playAudio(paymentAudio), [playAudio, paymentAudio]);
+  const playLogoutNotification = useCallback(() => playAudio(logoutAudio), [playAudio, logoutAudio]);
 
   // Initialize and load data from localStorage on initial mount
   useEffect(() => {
@@ -155,6 +156,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       } else {
           setArchivedOrders([]);
       }
+      
+      const storedBroadcast = localStorage.getItem('sotos_broadcast_message');
+      if (storedBroadcast) {
+          setBroadcastData(JSON.parse(storedBroadcast));
+      }
 
     } catch (error) {
       console.error("Failed to load data from localStorage", error);
@@ -183,22 +189,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
        if (event.key === 'sotos_orders' && event.newValue) {
-        const newOrders = JSON.parse(event.newValue);
-        setOrders(newOrders.map(mapOrderDates));
+        setOrders(JSON.parse(event.newValue).map(mapOrderDates));
       }
       if (event.key === 'sotos_archived_orders' && event.newValue) {
-        const newArchivedOrders = JSON.parse(event.newValue);
-        setArchivedOrders(newArchivedOrders.map(mapOrderDates));
+        setArchivedOrders(JSON.parse(event.newValue).map(mapOrderDates));
       }
        if (event.key === 'sotos_menu_items' && event.newValue) {
         setMenuItems(JSON.parse(event.newValue));
       }
       if (event.key === 'sotos_broadcast_message' && event.newValue) {
         const newBroadcast = JSON.parse(event.newValue);
-        // Using a functional update with a check to prevent loops
         setBroadcastData(prevData => {
             if (prevData?.timestamp !== newBroadcast.timestamp) {
-                playBroadcastNotification();
+                if (role !== 'jefe') playBroadcastNotification();
                 return newBroadcast;
             }
             return prevData;
@@ -213,7 +216,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             description: "Tu contraseña ha sido cambiada por el Jefe. Por favor, inicia sesión de nuevo.",
             variant: "destructive"
           });
-          setRole(null); // This triggers logout
+          setRole(null);
         }
       }
     };
@@ -230,6 +233,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       sessionStorage.setItem('userRole', newRole);
     } else {
       sessionStorage.removeItem('userRole');
+      playLogoutNotification();
     }
   };
 
@@ -288,17 +292,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const broadcastMessage = (message: string) => {
     const newBroadcast = { message, timestamp: Date.now() };
     localStorage.setItem('sotos_broadcast_message', JSON.stringify(newBroadcast));
-    // Trigger local update for the broadcaster's tab
-    window.dispatchEvent(
-      new StorageEvent('storage', {
+    // Manually trigger storage event for the current tab
+    const event = new StorageEvent('storage', {
         key: 'sotos_broadcast_message',
         newValue: JSON.stringify(newBroadcast),
-      })
-    );
+        storageArea: localStorage,
+    });
+    window.dispatchEvent(event);
   };
 
   const clearBroadcast = () => {
     setBroadcastData(null);
+    localStorage.removeItem('sotos_broadcast_message');
   }
 
 
@@ -312,7 +317,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
     if (newOrder.isPaid) {
         newOrder.status = 'pendiente';
-        playPaymentNotification();
+        if(role !== 'jefe') playPaymentNotification();
     }
 
     setOrders(prevOrders => [...prevOrders, newOrder]);
@@ -329,7 +334,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         break;
     }
 
-    if (role !== 'mesero' && role !== 'delivery') {
+    if (role !== 'mesero' && role !== 'delivery' && role !== 'jefe') {
         toast({ title: 'Nuevo Pedido', description: `Ha entrado un nuevo pedido ${orderIdentifier}` });
         playOrderNotification();
     }
@@ -345,7 +350,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       
       const wasPaidInThisUpdate = !originalOrder.isPaid && updates.isPaid;
       if(wasPaidInThisUpdate) {
-        playPaymentNotification();
+        if(role !== 'jefe') playPaymentNotification();
       }
       
       if (updates.isPaid && updatedOrder.status === 'entregada') {
@@ -390,16 +395,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       const meseroRoles: UserRole[] = ['mesero', 'jefe'];
       const deliveryRoles: UserRole[] = ['delivery', 'jefe'];
 
-      if (newStatus === 'lista_para_entrega' && meseroRoles.includes(role!)) {
-        if ((originalOrder.type === 'mesa' || originalOrder.type === 'pickup') && (originalOrder.waiterId === 'mesero1' || role === 'jefe')) {
-          toast({ title: 'Orden Lista', description: `El pedido de ${orderIdentifier} está listo para ser entregado.` });
-          playOrderNotification();
+      if (newStatus === 'lista_para_entrega') {
+        if (originalOrder.type === 'mesa' || originalOrder.type === 'pickup') {
+            if (meseroRoles.includes(role!) && (originalOrder.waiterId === 'mesero1' || role === 'jefe')) {
+                 toast({ title: 'Orden Lista', description: `El pedido de ${orderIdentifier} está listo para ser entregado.` });
+                 playOrderNotification();
+            }
         }
-      }
-      
-      if (newStatus === 'lista_para_entrega' && originalOrder.type === 'delivery' && deliveryRoles.includes(role!)) {
-        toast({ title: 'Pedido Listo para Delivery', description: `El pedido a domicilio está listo para ser recogido.` });
-        playOrderNotification();
+        if (originalOrder.type === 'delivery') {
+            if(deliveryRoles.includes(role!)) {
+                toast({ title: 'Pedido Listo para Delivery', description: `El pedido a domicilio está listo para ser recogido.` });
+                playOrderNotification();
+            }
+        }
       }
     }
   };
@@ -447,6 +455,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     toast({
       title: "Servicio Finalizado",
       description: "Tus ventas del día han sido archivadas. ¡Listo para un nuevo día!",
+    });
+  };
+  
+  const clearWaiterCancelledOrders = (waiterId: string) => {
+    setOrders(prevOrders =>
+      prevOrders.filter(
+        order => !(order.waiterId === waiterId && order.status === 'cancelada')
+      )
+    );
+    toast({
+      title: "Historial Limpio",
+      description: "Tus órdenes canceladas han sido eliminadas del historial.",
     });
   };
 
@@ -519,6 +539,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     getDeliveryOrders,
     archiveTodaysOrders,
     clearWaiterSoldOrders,
+    clearWaiterCancelledOrders,
     clearDeliverySoldOrders,
     clearKitchenCompletedOrders,
     broadcastMessage,

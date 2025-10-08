@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { PaymentMethod } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
-import { NotificationContext } from '../AppContext';
+import { AppContext, NotificationContext } from '../AppContext';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -25,6 +25,7 @@ interface PaymentModalProps {
 }
 
 export default function PaymentModal({ isOpen, onOpenChange, total, onConfirm }: PaymentModalProps) {
+  const { role } = useContext(AppContext);
   const [method, setMethod] = useState<PaymentMethod | ''>('');
   const [reference, setReference] = useState('');
   const { toast } = useToast();
@@ -50,7 +51,9 @@ export default function PaymentModal({ isOpen, onOpenChange, total, onConfirm }:
       })
       return;
     };
-    notificationContext?.playPaymentNotification();
+    if (role !== 'jefe') {
+        notificationContext?.playPaymentNotification();
+    }
     onConfirm(method as PaymentMethod, reference);
   };
 
