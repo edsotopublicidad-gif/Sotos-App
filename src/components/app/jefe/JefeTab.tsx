@@ -26,7 +26,7 @@ export default function JefeTab() {
         <PasswordManager />
       </div>
       <Tabs defaultValue="dashboard" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3">
           <TabsTrigger value="dashboard">Dashboard y Reportes</TabsTrigger>
           <TabsTrigger value="monitor">Órdenes en Tiempo Real</TabsTrigger>
           <TabsTrigger value="menu">Gestionar Menú</TabsTrigger>
