@@ -79,6 +79,18 @@ const mapOrderDates = (order: any): Order => ({
   ...(order.deliveredAt && { deliveredAt: new Date(order.deliveredAt) }),
 });
 
+const triggerStorageEvent = (key: string, value: any) => {
+    localStorage.setItem(key, JSON.stringify(value));
+    window.dispatchEvent(
+        new StorageEvent('storage', {
+            key: key,
+            newValue: JSON.stringify(value),
+            storageArea: localStorage
+        })
+    );
+};
+
+
 export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [role, setRoleState] = useState<UserRole | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -189,10 +201,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
        if (event.key === 'sotos_orders' && event.newValue) {
-        setOrders(JSON.parse(event.newValue).map(mapOrderDates));
+        const newOrders = JSON.parse(event.newValue).map(mapOrderDates);
+        setOrders(newOrders);
       }
       if (event.key === 'sotos_archived_orders' && event.newValue) {
-        setArchivedOrders(JSON.parse(event.newValue).map(mapOrderDates));
+        const newArchivedOrders = JSON.parse(event.newValue).map(mapOrderDates);
+        setArchivedOrders(newArchivedOrders);
       }
        if (event.key === 'sotos_menu_items' && event.newValue) {
         setMenuItems(JSON.parse(event.newValue));
@@ -245,18 +259,30 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       order: maxOrder + 1,
       isDisabled: false,
     };
-    setMenuItems(prev => [...prev, newItem]);
+    setMenuItems(prev => {
+        const newItems = [...prev, newItem];
+        triggerStorageEvent('sotos_menu_items', newItems);
+        return newItems;
+    });
     toast({ title: 'Éxito', description: 'El producto ha sido añadido al menú.'});
     return newItem;
   };
 
   const updateMenuItem = (itemId: string, updates: Partial<MenuItem>) => {
-    setMenuItems(prev => prev.map(item => item.id === itemId ? { ...item, ...updates } : item));
+    setMenuItems(prev => {
+        const newItems = prev.map(item => item.id === itemId ? { ...item, ...updates } : item);
+        triggerStorageEvent('sotos_menu_items', newItems);
+        return newItems;
+    });
     toast({ title: 'Éxito', description: 'El producto ha sido actualizado.'});
   };
 
   const deleteMenuItem = (itemId: string) => {
-    setMenuItems(prev => prev.filter(item => item.id !== itemId));
+    setMenuItems(prev => {
+        const newItems = prev.filter(item => item.id !== itemId);
+        triggerStorageEvent('sotos_menu_items', newItems);
+        return newItems;
+    });
     toast({ title: 'Éxito', description: 'El producto ha sido eliminado del menú.'});
   };
 
@@ -277,28 +303,24 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         newItems[currentIndex].order = newItems[targetIndex].order;
         newItems[targetIndex].order = currentItemOrder;
 
+        triggerStorageEvent('sotos_menu_items', newItems);
         return newItems;
     });
   };
 
   const toggleMenuItemAvailability = (itemId: string) => {
-    setMenuItems(prev => 
-      prev.map(item => 
-        item.id === itemId ? { ...item, isDisabled: !item.isDisabled } : item
-      )
-    );
+    setMenuItems(prev => {
+        const newItems = prev.map(item => 
+            item.id === itemId ? { ...item, isDisabled: !item.isDisabled } : item
+        );
+        triggerStorageEvent('sotos_menu_items', newItems);
+        return newItems;
+    });
   };
   
   const broadcastMessage = (message: string) => {
     const newBroadcast = { message, timestamp: Date.now() };
-    localStorage.setItem('sotos_broadcast_message', JSON.stringify(newBroadcast));
-    // Manually trigger storage event for the current tab
-    const event = new StorageEvent('storage', {
-        key: 'sotos_broadcast_message',
-        newValue: JSON.stringify(newBroadcast),
-        storageArea: localStorage,
-    });
-    window.dispatchEvent(event);
+    triggerStorageEvent('sotos_broadcast_message', newBroadcast);
   };
 
   const clearBroadcast = () => {
@@ -320,7 +342,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         if(role !== 'jefe') playPaymentNotification();
     }
 
-    setOrders(prevOrders => [...prevOrders, newOrder]);
+    setOrders(prevOrders => {
+        const newOrders = [...prevOrders, newOrder];
+        triggerStorageEvent('sotos_orders', newOrders);
+        return newOrders;
+    });
+
     let orderIdentifier = '';
     switch (newOrder.type) {
       case 'mesa':
@@ -370,11 +397,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
          }
       }
 
-      return prevOrders.map(order =>
+      const newOrders = prevOrders.map(order =>
         order.id === orderId
           ? updatedOrder
           : order
-      )
+      );
+
+      triggerStorageEvent('sotos_orders', newOrders);
+      return newOrders;
     });
 
     if (originalOrder && updates.status && originalOrder.status !== updates.status) {
@@ -437,8 +467,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     const remainingOrders = orders.filter(order => !ordersToArchive.some(archived => archived.id === order.id));
 
-    setArchivedOrders(prevArchived => [...prevArchived, ...ordersToArchive]);
+    setArchivedOrders(prevArchived => {
+        const newArchived = [...prevArchived, ...ordersToArchive];
+        triggerStorageEvent('sotos_archived_orders', newArchived);
+        return newArchived;
+    });
     setOrders(remainingOrders);
+    triggerStorageEvent('sotos_orders', remainingOrders);
     
     toast({
       title: "Cierre del Día Realizado",
@@ -447,11 +482,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const clearWaiterSoldOrders = (waiterId: string) => {
-    setOrders(prevOrders =>
-      prevOrders.filter(
+    setOrders(prevOrders => {
+      const newOrders = prevOrders.filter(
         order => !(order.waiterId === waiterId && order.status === 'pagada')
-      )
-    );
+      );
+      triggerStorageEvent('sotos_orders', newOrders);
+      return newOrders;
+    });
     toast({
       title: "Servicio Finalizado",
       description: "Tus ventas del día han sido archivadas. ¡Listo para un nuevo día!",
@@ -459,11 +496,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
   
   const clearWaiterCancelledOrders = (waiterId: string) => {
-    setOrders(prevOrders =>
-      prevOrders.filter(
+    setOrders(prevOrders => {
+      const newOrders = prevOrders.filter(
         order => !(order.waiterId === waiterId && order.status === 'cancelada')
-      )
-    );
+      );
+      triggerStorageEvent('sotos_orders', newOrders);
+      return newOrders;
+    });
     toast({
       title: "Historial Limpio",
       description: "Tus órdenes canceladas han sido eliminadas del historial.",
@@ -471,11 +510,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const clearDeliverySoldOrders = (deliveryId: string) => {
-    setOrders(prevOrders =>
-      prevOrders.filter(
+    setOrders(prevOrders => {
+      const newOrders = prevOrders.filter(
         order => !(order.waiterId === deliveryId && order.status === 'pagada')
-      )
-    );
+      );
+      triggerStorageEvent('sotos_orders', newOrders);
+      return newOrders;
+    });
     toast({
       title: "Servicio Finalizado",
       description: "Tus entregas del día han sido archivadas. ¡Listo para un nuevo día!",
@@ -484,9 +525,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   
   const clearKitchenCompletedOrders = () => {
     const completedStatuses: OrderStatus[] = ['lista_para_entrega', 'en_camino', 'entregada', 'pagada'];
-    setOrders(prevOrders => 
-      prevOrders.filter(order => !completedStatuses.includes(order.status))
-    );
+    setOrders(prevOrders => {
+        const newOrders = prevOrders.filter(order => !completedStatuses.includes(order.status));
+        triggerStorageEvent('sotos_orders', newOrders);
+        return newOrders;
+    });
     toast({
       title: "Servicio de Cocina Finalizado",
       description: "El historial de pedidos preparados ha sido limpiado.",
@@ -495,7 +538,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const clearArchivedOrders = () => {
     setArchivedOrders([]);
-    // localStorage.setItem('sotos_archived_orders', '[]');
+    triggerStorageEvent('sotos_archived_orders', []);
     toast({
         title: "Historial de Ventas Eliminado",
         description: "Todos los registros de ventas archivadas han sido eliminados.",
@@ -517,6 +560,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             description: `Se han eliminado los registros de ventas para el mes seleccionado.`
         });
         
+        triggerStorageEvent('sotos_archived_orders', filtered);
         return filtered;
     });
   };

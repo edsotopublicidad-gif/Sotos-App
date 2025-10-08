@@ -153,7 +153,7 @@ export default function SalesReport({ orders }: SalesReportProps) {
   return (
     <div className="space-y-8">
        <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-semibold font-headline">Reporte de Ventas</h2>
+        <h2 className="text-xl md:text-2xl font-semibold font-headline">Reporte de Ventas</h2>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button variant="outline">

@@ -51,14 +51,14 @@ export default function Home() {
             <p className="text-muted-foreground font-semibold italic">¡Tan diferentes Como Tú!</p>
           </div>
           <div className="mt-4 font-bold text-sm">Rol: {roleNames[role]}</div>
-          <div className="absolute top-0 right-0">
+          <div className="absolute top-0 right-0 mt-2 mr-2">
             <LogoutConfirmationDialog onConfirm={handleLogout} />
           </div>
         </header>
 
         <main>
           <Tabs defaultValue={defaultTab} className="w-full">
-            <TabsList className={`grid w-full ${role === 'jefe' ? 'grid-cols-4' : 'grid-cols-1'}`}>
+            <TabsList className={`grid w-full ${role === 'jefe' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-1'}`}>
               {availableTabs.map(tab => (
                   <TabsTrigger key={tab.value} value={tab.value}>{tab.label}</TabsTrigger>
               ))}
