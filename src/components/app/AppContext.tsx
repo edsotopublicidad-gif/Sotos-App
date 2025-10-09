@@ -98,7 +98,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [archivedOrders, setArchivedOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [isDataLoaded, setIsDataLoaded] = useState(false);
   const { toast } = useToast();
   const [orderAudio, setOrderAudio] = useState<HTMLAudioElement | null>(null);
   const [broadcastAudio, setBroadcastAudio] = useState<HTMLAudioElement | null>(null);
@@ -107,7 +106,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [broadcastData, setBroadcastData] = useState<{ message: string; timestamp: number } | null>(null);
 
   useEffect(() => {
-    // These now use `typeof window !== 'undefined'` to avoid errors on the server
     if (typeof window !== 'undefined') {
         setOrderAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/03/10/audio_c31f0c2940.mp3?filename=bell-notification-83342.mp3'));
         setBroadcastAudio(new Audio('https://cdn.pixabay.com/download/audio/2022/10/28/audio_2434180442.mp3?filename=new-notification-020-352772.mp3'));
@@ -118,7 +116,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const playAudio = useCallback((audio: HTMLAudioElement | null) => {
     if (audio) {
-      audio.currentTime = 0; // Rewind to start
+      audio.currentTime = 0;
       audio.play().catch(error => console.log("Audio playback failed:", error));
     }
   }, []);
@@ -128,27 +126,28 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const playPaymentNotification = useCallback(() => playAudio(paymentAudio), [playAudio, paymentAudio]);
   const playLogoutNotification = useCallback(() => playAudio(logoutAudio), [playAudio, logoutAudio]);
 
-  const loadDataFromStorage = useCallback(() => {
+  const loadDataFromStorage = useCallback((event?: StorageEvent) => {
     try {
         const storedRole = sessionStorage.getItem('userRole') as UserRole;
         if (storedRole) setRoleState(storedRole);
 
         const storedMenuItems = localStorage.getItem('sotos_menu_items');
-        let loadedMenuItems: MenuItem[];
-        if (storedMenuItems) {
-            loadedMenuItems = JSON.parse(storedMenuItems).map((item: any, index: number) => ({
-                ...item,
-                order: item.order ?? index,
-                isDisabled: item.isDisabled ?? false,
-            }));
-        } else {
-            loadedMenuItems = defaultMenuItems.map((item, index) => ({ ...item, order: index, isDisabled: false }));
-        }
+        const loadedMenuItems: MenuItem[] = storedMenuItems 
+            ? JSON.parse(storedMenuItems).map((item: any, index: number) => ({ ...item, order: item.order ?? index, isDisabled: item.isDisabled ?? false }))
+            : defaultMenuItems.map((item, index) => ({ ...item, order: index, isDisabled: false }));
         setMenuItems(current => JSON.stringify(current) !== JSON.stringify(loadedMenuItems) ? loadedMenuItems : current);
 
         const storedOrders = localStorage.getItem('sotos_orders');
         const loadedOrders = storedOrders ? JSON.parse(storedOrders).map(mapOrderDates) : [];
-        setOrders(current => JSON.stringify(current) !== JSON.stringify(loadedOrders) ? loadedOrders : current);
+        setOrders(current => {
+            if (JSON.stringify(current) !== JSON.stringify(loadedOrders)) {
+                if (event && event.key === 'sotos_orders' && role === 'cocina' && loadedOrders.length > current.length) {
+                    playOrderNotification();
+                }
+                return loadedOrders;
+            }
+            return current;
+        });
 
         const storedArchivedOrders = localStorage.getItem('sotos_archived_orders');
         const loadedArchivedOrders = storedArchivedOrders ? JSON.parse(storedArchivedOrders).map(mapOrderDates) : [];
@@ -158,7 +157,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         const loadedBroadcast = storedBroadcast ? JSON.parse(storedBroadcast) : null;
         setBroadcastData(current => {
              if (JSON.stringify(current) !== JSON.stringify(loadedBroadcast)) {
-                if (loadedBroadcast && current?.timestamp !== loadedBroadcast.timestamp && role !== 'jefe') {
+                if (event && event.key === 'sotos_broadcast_message' && loadedBroadcast && current?.timestamp !== loadedBroadcast.timestamp && role !== 'jefe') {
                   playBroadcastNotification();
                 }
                 return loadedBroadcast;
@@ -168,13 +167,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     } catch (error) {
         console.error("Failed to load data from localStorage", error);
-    } finally {
-        if (!isDataLoaded) setIsDataLoaded(true);
     }
-  }, [isDataLoaded, role, playBroadcastNotification]);
+  }, [role, playOrderNotification, playBroadcastNotification]);
 
-
-  // Initialize and load data from localStorage on initial mount
   useEffect(() => {
     const storedPasswords = localStorage.getItem('sotos_passwords');
     if (!storedPasswords) {
@@ -183,21 +178,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     loadDataFromStorage();
   }, [loadDataFromStorage]);
 
-
-  // Polling mechanism for robust synchronization
   useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+        loadDataFromStorage(event);
+    };
+    window.addEventListener('storage', handleStorageChange);
+
     const interval = setInterval(() => {
         loadDataFromStorage();
-    }, 15000); // Poll every 15 seconds
-
-    window.addEventListener('storage', loadDataFromStorage);
+    }, 5000); 
 
     return () => {
+        window.removeEventListener('storage', handleStorageChange);
         clearInterval(interval);
-        window.removeEventListener('storage', loadDataFromStorage);
     };
   }, [loadDataFromStorage]);
-
   
   const setRole = (newRole: UserRole | null) => {
     setRoleState(newRole);
@@ -278,6 +273,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const broadcastMessage = (message: string) => {
     const newBroadcast = { message, timestamp: Date.now() };
     triggerStorageEvent('sotos_broadcast_message', newBroadcast);
+    playBroadcastNotification();
   };
 
   const clearBroadcast = () => {
@@ -305,7 +301,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return newOrders;
     });
 
-    if (role === 'cocina') {
+    if (role !== 'cocina') {
         playOrderNotification();
     }
   };
@@ -357,12 +353,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       const deliveryRoles: UserRole[] = ['delivery', 'jefe'];
 
       if (newStatus === 'lista_para_entrega') {
-        if ((originalOrder.type === 'mesa' || originalOrder.type === 'pickup') && meseroRoles.includes(role!)) {
-             playOrderNotification();
-        }
-        if (originalOrder.type === 'delivery' && deliveryRoles.includes(role!)) {
-            playOrderNotification();
-        }
+         playOrderNotification();
       }
     }
   };

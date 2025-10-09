@@ -24,9 +24,14 @@ export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmati
   const [isOpen, setIsOpen] = useState(false);
   const notificationContext = useContext(NotificationContext);
 
-  const handleOpen = () => {
+  const handleTriggerClick = () => {
     notificationContext?.playLogoutNotification();
     setIsOpen(true);
+  };
+  
+  const handleConfirmClick = () => {
+    onConfirm();
+    setIsOpen(false);
   }
 
   return (
@@ -36,7 +41,7 @@ export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmati
             id="logout-btn"
             variant="ghost"
             size="icon"
-            onClick={handleOpen}
+            onClick={handleTriggerClick}
             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
         >
             <LogOut className="h-5 w-5" />
@@ -51,7 +56,7 @@ export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmati
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancelar</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm}>Confirmar</AlertDialogAction>
+          <AlertDialogAction onClick={handleConfirmClick}>Confirmar</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
