@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useContext } from 'react';
+import { useState } from 'react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,7 +13,6 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { NotificationContext } from '../AppContext';
 import { LogOut } from 'lucide-react';
 
 interface LogoutConfirmationDialogProps {
@@ -22,14 +21,8 @@ interface LogoutConfirmationDialogProps {
 
 export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmationDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const notificationContext = useContext(NotificationContext);
 
-  const handleTriggerClick = () => {
-    notificationContext?.playLogoutNotification();
-    setIsOpen(true);
-  };
-  
-  const handleConfirmClick = () => {
+  const handleConfirmLogout = () => {
     onConfirm();
     setIsOpen(false);
   }
@@ -38,13 +31,11 @@ export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmati
     <AlertDialog open={isOpen} onOpenChange={setIsOpen}>
       <AlertDialogTrigger asChild>
         <Button 
-            id="logout-btn"
-            variant="ghost"
-            size="icon"
-            onClick={handleTriggerClick}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            variant="destructive"
+            size="sm"
         >
-            <LogOut className="h-5 w-5" />
+            <LogOut className="mr-2 h-4 w-4" />
+            Salir
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -56,7 +47,7 @@ export default function LogoutConfirmationDialog({ onConfirm }: LogoutConfirmati
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancelar</AlertDialogCancel>
-          <AlertDialogAction onClick={handleConfirmClick}>Confirmar</AlertDialogAction>
+          <AlertDialogAction onClick={handleConfirmLogout}>Confirmar</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

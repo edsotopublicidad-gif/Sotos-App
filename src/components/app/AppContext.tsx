@@ -1,10 +1,11 @@
 "use client";
 
-import { createContext, useState, useEffect, ReactNode, useCallback, useContext, useMemo, useRef } from 'react';
+import { createContext, useState, useEffect, ReactNode, useCallback, useContext, useRef } from 'react';
 import type { UserRole, Order, MenuItem, BroadcastMessage as BroadcastMessageType } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
-import { useCollection, useDoc, useFirestore, useMemoFirebase } from '@/firebase';
+import { useAuth, useCollection, useDoc, useFirestore, useMemoFirebase } from '@/firebase';
 import { collection, doc, writeBatch, serverTimestamp, Timestamp, query, where, orderBy, deleteDoc, setDoc, addDoc } from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
 
 interface AppContextType {
   role: UserRole | null;
@@ -50,6 +51,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [role, setRoleState] = useState<UserRole | null>(null);
   const { toast } = useToast();
   const firestore = useFirestore();
+  const auth = useAuth();
 
   // Sounds
   const [orderAudio, setOrderAudio] = useState<HTMLAudioElement | null>(null);
@@ -132,15 +134,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const setRole = (newRole: UserRole | null) => {
     setRoleState(newRole);
     if (newRole) {
-      sessionStorage.setItem('userRole', newRole);
+      localStorage.setItem('userRole', newRole);
     } else {
-      sessionStorage.removeItem('userRole');
+      localStorage.removeItem('userRole');
       playLogoutNotification();
+      signOut(auth);
     }
   };
 
   useEffect(() => {
-    const storedRole = sessionStorage.getItem('userRole') as UserRole;
+    const storedRole = localStorage.getItem('userRole') as UserRole;
     if (storedRole) {
       setRoleState(storedRole);
     }
@@ -148,7 +151,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
 
   const addMenuItem = async (item: Omit<MenuItem, 'id' | 'order'>): Promise<MenuItem | undefined> => {
-    if(!menuItems) return;
+    if(!menuItems || !firestore) return;
     const maxOrder = menuItems.length > 0 ? Math.max(...menuItems.map(item => item.order)) : -1;
     const newItem: Omit<MenuItem, 'id'> = {
       ...item,
@@ -166,6 +169,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const updateMenuItem = (itemId: string, updates: Partial<MenuItem>) => {
+    if (!firestore) return;
     const docRef = doc(firestore, 'menu_items', itemId);
     setDoc(docRef, updates, { merge: true }).then(() => {
         toast({ title: 'Éxito', description: 'El producto ha sido actualizado.'});
@@ -176,6 +180,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const deleteMenuItem = (itemId: string) => {
+    if (!firestore) return;
     deleteDoc(doc(firestore, 'menu_items', itemId)).then(() => {
         toast({ title: 'Éxito', description: 'El producto ha sido eliminado del menú.'});
     }).catch(error => {
@@ -185,7 +190,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const moveMenuItem = async (itemId: string, direction: 'up' | 'down') => {
-    if (!menuItems) return;
+    if (!menuItems || !firestore) return;
     const sortedItems = [...menuItems].sort((a,b) => a.order - b.order);
     const currentIndex = sortedItems.findIndex(item => item.id === itemId);
 
@@ -212,14 +217,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
   
   const broadcastMessage = (message: string) => {
+    if (!firestore || !broadcastDocRef) return;
     setDoc(broadcastDocRef, { message, timestamp: serverTimestamp() });
   };
 
   const clearBroadcast = () => {
+    if (!firestore || !broadcastDocRef) return;
     setDoc(broadcastDocRef, { message: '', timestamp: serverTimestamp() });
   }
 
   const addOrder = (orderData: Omit<Order, 'id' | 'timestamp' | 'lastUpdated'>) => {
+    if (!firestore) return;
     const newOrder = {
         ...orderData,
         timestamp: serverTimestamp(),
@@ -234,6 +242,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const updateOrder = (orderId: string, updates: Partial<Omit<Order, 'id'>>) => {
+    if (!firestore || !ordersData) return;
     const orderDoc = doc(firestore, 'orders', orderId);
     let finalUpdates: Partial<Omit<Order, 'id' | 'timestamp' | 'lastUpdated'>> & { lastUpdated: Timestamp} = { ...updates, lastUpdated: serverTimestamp() as Timestamp};
     
@@ -271,13 +280,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const archiveTodaysOrders = async () => {
-    if (!ordersData) return;
+    if (!ordersData || !firestore) return;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
     const statusesToArchive = ['pagada', 'cancelada'];
     
     const ordersToArchive = ordersData.filter(order => {
+        if(!order.lastUpdated) return false;
         const orderDate = toDate(order.lastUpdated);
         return statusesToArchive.includes(order.status) && orderDate >= today;
     });
@@ -300,10 +310,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     });
   };
 
-  const clearOrdersByIdAndStatus = async (ownerId: string, statuses: string[], idField: 'waiterId' | 'deliveryId') => {
-      if(!ordersData) return;
+  const clearOrdersByIdAndStatus = async (ownerId: string, statuses: string[], idField: 'waiterId') => {
+      if(!ordersData || !firestore) return;
 
-      const ordersToClear = ordersData.filter(order => order[idField] === ownerId && statuses.includes(order.status));
+      const ordersToClear = (ordersData || []).filter(order => order[idField] === ownerId && statuses.includes(order.status));
 
       if(ordersToClear.length > 0) {
         const batch = writeBatch(firestore);
@@ -341,9 +351,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
   
   const clearKitchenCompletedOrders = async () => {
-    if(!ordersData) return;
+    if(!ordersData || !firestore) return;
     const completedStatuses = ['lista_para_entrega', 'en_camino', 'entregada', 'pagada'];
-    const ordersToClear = ordersData.filter(order => completedStatuses.includes(order.status));
+    const ordersToClear = (ordersData || []).filter(order => completedStatuses.includes(order.status));
     
     if(ordersToClear.length > 0) {
         const batch = writeBatch(firestore);
@@ -360,7 +370,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const clearArchivedOrders = async () => {
-    if (!archivedOrdersData) return;
+    if (!archivedOrdersData || !firestore) return;
     const batch = writeBatch(firestore);
     archivedOrdersData.forEach(order => {
         batch.delete(doc(firestore, 'orders', order.id));
@@ -373,10 +383,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const clearArchivedOrdersByMonth = async (monthKey: string) => {
-    if (!archivedOrdersData) return;
+    if (!archivedOrdersData || !firestore) return;
     const [year, month] = monthKey.split('-').map(Number);
     
-    const ordersToDelete = archivedOrdersData.filter(order => {
+    const ordersToDelete = (archivedOrdersData || []).filter(order => {
+        if(!order.lastUpdated) return false;
         const orderDate = toDate(order.lastUpdated);
         return orderDate.getFullYear() === year && orderDate.getMonth() === month;
     });

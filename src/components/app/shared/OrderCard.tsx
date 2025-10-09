@@ -20,6 +20,7 @@ import {
 import PaymentModal from '../mesero/PaymentModal';
 import { useToast } from '@/hooks/use-toast';
 import { DollarSign, MessageSquareWarning } from 'lucide-react';
+import { Timestamp } from 'firebase/firestore';
 
 interface OrderCardProps {
   order: Order;
@@ -34,6 +35,7 @@ const statusConfig: Record<OrderStatus, { text: string; variant: 'default' | 'se
   entregada: { text: 'Entregada', variant: 'outline' },
   pagada: { text: 'Pagada', variant: 'outline' },
   cancelada: { text: 'Cancelada', variant: 'destructive' },
+  archived: { text: 'Archivada', variant: 'outline'}
 };
 
 const formatElapsedTime = (startTime: Date): string => {
@@ -45,6 +47,13 @@ const formatElapsedTime = (startTime: Date): string => {
   return `${minutes}m ${seconds}s`;
 };
 
+const toDate = (timestamp: Timestamp | Date): Date => {
+  if (timestamp instanceof Timestamp) {
+    return timestamp.toDate();
+  }
+  return timestamp;
+}
+
 export default function OrderCard({ order, onEdit }: OrderCardProps) {
   const { role, updateOrder, cancelOrder } = useContext(AppContext);
   const [elapsedTime, setElapsedTime] = useState('0m 0s');
@@ -53,21 +62,23 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
 
   useEffect(() => {
     let timerSourceDate: Date | undefined;
+    const orderTimestamp = toDate(order.timestamp);
+    const orderLastUpdated = toDate(order.lastUpdated);
 
     if (role === 'mesero' || role === 'delivery' || role === 'jefe') {
         if (order.status === 'lista_para_entrega') {
-            timerSourceDate = order.lastUpdated; 
+            timerSourceDate = orderLastUpdated; 
         } else {
-            timerSourceDate = order.timestamp;
+            timerSourceDate = orderTimestamp;
         }
     } else if (role === 'cocina') {
         if (['pendiente', 'en_proceso'].includes(order.status)) {
-            timerSourceDate = order.timestamp;
+            timerSourceDate = orderTimestamp;
         }
     }
 
 
-    if (!timerSourceDate || (order.status === 'lista_para_entrega' && role === 'cocina') || ['entregada', 'pagada', 'cancelada'].includes(order.status)) {
+    if (!timerSourceDate || (order.status === 'lista_para_entrega' && role === 'cocina') || ['entregada', 'pagada', 'cancelada', 'archived'].includes(order.status)) {
         setElapsedTime('');
         return;
     }
@@ -84,10 +95,10 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
   const handleStatusUpdate = (newStatus: OrderStatus) => {
     const updates: Partial<Order> = { status: newStatus };
     if (newStatus === 'en_proceso') {
-      updates.acceptedAt = new Date();
+      updates.acceptedAt = Timestamp.now();
     }
     if (newStatus === 'entregada') {
-      updates.deliveredAt = new Date();
+      updates.deliveredAt = Timestamp.now();
     }
     updateOrder(order.id, updates);
   };
@@ -108,17 +119,19 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
 
   const renderMeseroActions = () => {
     const actions = [];
+    const isActiveOrder = ['pendiente', 'en_proceso', 'lista_para_entrega'].includes(order.status);
+
     if (order.status === 'lista_para_entrega' && (order.type === 'mesa' || order.type === 'pickup')) {
       actions.push(<Button key="entregado" size="sm" onClick={() => handleStatusUpdate('entregada')}>Entregado</Button>);
     }
 
-    if (!order.isPaid && onEdit) {
+    if (isActiveOrder && onEdit) {
       actions.push(
           <Button key="editar" size="sm" className="bg-yellow-500 hover:bg-yellow-600 text-black" onClick={() => onEdit(order.id)}>Editar</Button>
       );
     }
     
-    if (!order.isPaid && onEdit) {
+    if (isActiveOrder) {
         actions.push(
              <AlertDialog key="cancelar-pendiente">
                 <AlertDialogTrigger asChild>
@@ -140,37 +153,17 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
         )
     }
 
-    if (!order.isPaid && order.type === 'mesa') {
-        actions.push(
-         <Button 
-            key="pagar_orden" 
-            size="sm" 
-            onClick={() => setIsPaymentModalOpen(true)}
-            className="bg-green-600 hover:bg-green-700 text-white"
-        >
-            Confirmar Pago y Enviar
-        </Button>
-        );
-    }
-    
-    if (!order.isPaid && order.status === 'entregada') {
+    if (!order.isPaid && (order.status === 'entregada' || (isActiveOrder && order.type !== 'mesa'))) {
         actions.push(
          <Button 
             key="confirmar_pago" 
             size="sm" 
             onClick={() => setIsPaymentModalOpen(true)}
-            className="bg-red-600 hover:bg-red-700 text-white"
+            className="bg-green-600 hover:bg-green-700 text-white"
         >
             Confirmar Pago
         </Button>
         );
-    }
-
-    // Move "Pagar Orden" to be last if present
-    const payButtonIndex = actions.findIndex(action => action?.key === 'pagar_orden');
-    if (payButtonIndex > -1) {
-        const payButton = actions.splice(payButtonIndex, 1)[0];
-        if (payButton) actions.push(payButton);
     }
 
     return actions;
@@ -189,7 +182,8 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
 
   const renderDeliveryActions = () => {
     const actions = [];
-     if (!order.isPaid && onEdit) {
+    const isActiveOrder = ['pendiente', 'en_proceso', 'lista_para_entrega', 'en_camino'].includes(order.status);
+    if (isActiveOrder && onEdit) {
       actions.push(
           <Button key="editar_delivery" size="sm" className="bg-yellow-500 hover:bg-yellow-600 text-black" onClick={() => onEdit(order.id)}>Editar</Button>
       );
@@ -209,7 +203,7 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
             key="confirmar_pago_delivery" 
             size="sm" 
             onClick={() => setIsPaymentModalOpen(true)}
-            className="bg-red-600 hover:bg-red-700 text-white"
+            className="bg-green-600 hover:bg-green-700 text-white"
         >
             Confirmar Pago
         </Button>
@@ -261,6 +255,8 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
     }
   }
 
+  const orderTimestamp = toDate(order.timestamp);
+
   return (
     <>
     <PaymentModal
@@ -269,7 +265,7 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
         total={order.total}
         onConfirm={handlePaymentConfirm}
       />
-    <Card className={`relative ${order.status === 'actualizada_mesero' ? 'border-accent' : ''}`}>
+    <Card className={'relative'}>
       {(role !== 'cocina' || role === 'jefe') && order.isPaid && order.status !== 'pagada' && (
         <div className="absolute top-2 right-2 bg-green-500 text-white p-1 rounded-full" title="Esta orden ya fue pagada">
           <DollarSign className="h-4 w-4" />
@@ -283,7 +279,7 @@ export default function OrderCard({ order, onEdit }: OrderCardProps) {
           {showTimer && <div className="text-sm font-semibold text-muted-foreground">{elapsedTime}</div>}
         </div>
         <div className="text-xs text-muted-foreground">
-          {new Date(order.timestamp).toLocaleDateString('es-VE')} {new Date(order.timestamp).toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', hour12: true })} - {order.waiterName}
+          {orderTimestamp.toLocaleDateString('es-VE')} {orderTimestamp.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', hour12: true })} - {order.waiterName}
         </div>
       </CardHeader>
       <CardContent>

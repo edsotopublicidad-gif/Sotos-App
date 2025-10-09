@@ -1,0 +1,75 @@
+/**
+ * @fileoverview Firestore Security Rules for Soto's Foods.
+ *
+ * Core Philosophy:
+ * This ruleset prioritizes a flexible data model suitable for rapid prototyping
+ * while implementing authentication-based security. It does NOT enforce strict
+ * data validation but focuses on access control.
+ *
+ * Data Structure:
+ * The Firestore database consists of three top-level collections:
+ * - /orders/{orderId}: Stores customer orders.
+ * - /menu_items/{menuItemId}: Stores the menu items.
+ * - /broadcast/message: A singleton document to broadcast messages to all staff
+ *
+ * Key Security Decisions:
+ * - Orders: Any authenticated user can read order data, but write access is denied.
+ * - Menu Items: Publicly readable, but writes are disallowed, so the data is read-only by the application.
+ * - Broadcast Messages: Writes are disallowed, preventing modifications. Reads are public.
+ *
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /**
+     * @description Grants read access to all authenticated users for orders. Write access is forbidden.
+     * @path /orders/{orderId}
+     * @allow (get, list) Any signed-in user can read order data.
+     * @deny (create, update, delete) No user can create, update, or delete order data.
+     * @principle Allows reads by all authenticated users. Denies writes for prototyping.
+     */
+    match /orders/{orderId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    /**
+     * @description Grants public read access to all users for menu items. Write access is forbidden.
+     * @path /menu_items/{menuItemId}
+     * @allow (get, list) Any user (signed-in or not) can read menu item data.
+     * @deny (create, update, delete) No user can create, update, or delete menu item data.
+     * @principle Provides public read access with no write access.
+     */
+    match /menu_items/{menuItemId} {
+      allow get: if true;
+      allow list: if true;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    /**
+     * @description Grants public read access to the broadcast message. Write access is forbidden.
+     * @path /broadcast/message
+     * @allow (get, list) Any user (signed-in or not) can read the broadcast message.
+     * @deny (create, update, delete) No user can create, update, or delete the broadcast message.
+     * @principle Provides public read access with no write access.
+     */
+    match /broadcast/message {
+      allow get: if true;
+      allow list: if true;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+
+  // Helper function to determine if a user is signed in.
+  function isSignedIn() {
+    return request.auth != null;
+  }
+}

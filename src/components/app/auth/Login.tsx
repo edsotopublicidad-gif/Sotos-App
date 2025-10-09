@@ -12,6 +12,9 @@ import type { UserRole } from '@/lib/types';
 import { Eye, EyeOff } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast"
 import type { Passwords } from '@/lib/types';
+import { defaultPasswords } from '@/lib/data';
+import { signInAnonymously, useAuth } from '@/firebase';
+
 
 export default function Login() {
   const { setRole } = useContext(AppContext);
@@ -20,12 +23,16 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [passwords, setPasswords] = useState<Passwords | null>(null);
   const { toast } = useToast();
+  const auth = useAuth();
 
   useEffect(() => {
     // Passwords are now loaded from localStorage
     const storedPasswords = localStorage.getItem('sotos_passwords');
     if (storedPasswords) {
       setPasswords(JSON.parse(storedPasswords));
+    } else {
+        localStorage.setItem('sotos_passwords', JSON.stringify(defaultPasswords));
+        setPasswords(defaultPasswords);
     }
   }, []);
 
@@ -33,7 +40,19 @@ export default function Login() {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (passwords && passwords[selectedRole] === password) {
-      setRole(selectedRole);
+      // Sign in anonymously to Firebase to get a UID and permissions
+      signInAnonymously(auth)
+        .then(() => {
+          setRole(selectedRole);
+        })
+        .catch((error) => {
+          console.error("Anonymous sign-in failed: ", error);
+          toast({
+            variant: "destructive",
+            title: "Error de conexión",
+            description: "No se pudo conectar con el servidor. Inténtalo de nuevo.",
+          })
+        });
     } else {
       toast({
         variant: "destructive",

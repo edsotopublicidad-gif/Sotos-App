@@ -23,7 +23,8 @@ export type OrderStatus =
   | 'en_camino'
   | 'entregada'
   | 'pagada' // This status now represents a fully completed (delivered and paid) order
-  | 'cancelada';
+  | 'cancelada'
+  | 'archived';
 
 export type Order = {
   id: string;
@@ -35,12 +36,12 @@ export type Order = {
   status: OrderStatus;
   isPaid: boolean; // New field to track payment status independently
   notes?: string;
-  timestamp: Date; // Creacion del pedido
-  acceptedAt?: Date; // Cuando cocina acepta
-  lastUpdated: Date;
+  timestamp: Timestamp; // Creacion del pedido
+  acceptedAt?: Timestamp; // Cuando cocina acepta
+  lastUpdated: Timestamp;
   waiterId: string;
   waiterName: string;
-  deliveredAt?: Date;
+  deliveredAt?: Timestamp;
   paymentMethod?: PaymentMethod;
   paymentReference?: string;
 };
@@ -49,29 +50,7 @@ export type Passwords = {
   [key in UserRole]: string;
 };
 
-export interface AppContextType {
-  role: UserRole | null;
-  setRole: (role: UserRole | null) => void;
-  orders: Order[];
-  archivedOrders: Order[];
-  menuItems: MenuItem[];
-  addMenuItem: (item: Omit<MenuItem, 'id' | 'order'>) => MenuItem;
-  updateMenuItem: (itemId: string, updates: Partial<MenuItem>) => void;
-  deleteMenuItem: (itemId: string) => void;
-  moveMenuItem: (itemId: string, direction: 'up' | 'down') => void;
-  toggleMenuItemAvailability: (itemId: string) => void;
-  addOrder: (order: Omit<Order, 'id' | 'timestamp' | 'lastUpdated' | 'isPaid'>) => void;
-  updateOrder: (orderId: string, updates: Partial<Order>) => void;
-  cancelOrder: (orderId: string) => void;
-  getWaiterOrders: (waiterId: string) => Order[];
-  getDeliveryOrders: (deliveryId: string) => Order[];
-  archiveTodaysOrders: () => void;
-  clearWaiterSoldOrders: (waiterId: string) => void;
-  clearDeliverySoldOrders: (deliveryId: string) => void;
-  clearKitchenCompletedOrders: () => void;
-  broadcastMessage: (message: string) => void;
-  broadcastData: { message: string; timestamp: number } | null;
-  clearBroadcast: () => void;
-  clearArchivedOrders: () => void;
-  clearArchivedOrdersByMonth: (monthKey: string) => void;
+export type BroadcastMessage = {
+  message: string;
+  timestamp: Timestamp;
 }
