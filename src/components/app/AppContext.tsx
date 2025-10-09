@@ -1,32 +1,25 @@
 "use client";
 
-import { createContext, useState, useEffect, ReactNode, useCallback } from 'react';
-import type { UserRole, Order, OrderStatus, MenuItem } from '@/lib/types';
-import { initialOrders as fallbackOrders, menuItems as defaultMenuItems } from '@/lib/data';
+import { createContext, useState, useEffect, ReactNode, useCallback, useContext, useMemo, useRef } from 'react';
+import type { UserRole, Order, MenuItem, BroadcastMessage as BroadcastMessageType } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
-import { defaultPasswords } from '@/lib/data';
-import { getYear, getMonth, parseISO, isDate } from 'date-fns';
-
-interface NotificationContextType {
-  playOrderNotification: () => void;
-  playBroadcastNotification: () => void;
-  playPaymentNotification: () => void;
-  playLogoutNotification: () => void;
-}
-export const NotificationContext = createContext<NotificationContextType | null>(null);
+import { useCollection, useDoc, useFirestore, useMemoFirebase } from '@/firebase';
+import { collection, doc, writeBatch, serverTimestamp, Timestamp, query, where, orderBy, deleteDoc, setDoc, addDoc } from 'firebase/firestore';
 
 interface AppContextType {
   role: UserRole | null;
   setRole: (role: UserRole | null) => void;
-  orders: Order[];
-  archivedOrders: Order[];
-  menuItems: MenuItem[];
-  addMenuItem: (item: Omit<MenuItem, 'id' | 'order'>) => MenuItem;
+  orders: Order[] | null;
+  archivedOrders: Order[] | null;
+  menuItems: MenuItem[] | null;
+  isLoadingOrders: boolean;
+  isLoadingMenuItems: boolean;
+  addMenuItem: (item: Omit<MenuItem, 'id' | 'order'>) => Promise<MenuItem | undefined>;
   updateMenuItem: (itemId: string, updates: Partial<MenuItem>) => void;
   deleteMenuItem: (itemId: string) => void;
   moveMenuItem: (itemId: string, direction: 'up' | 'down') => void;
   toggleMenuItemAvailability: (itemId: string) => void;
-  addOrder: (order: Omit<Order, 'id' | 'timestamp' | 'lastUpdated' | 'isPaid'>) => void;
+  addOrder: (order: Omit<Order, 'id' | 'timestamp' | 'lastUpdated'>) => void;
   updateOrder: (orderId: string, updates: Partial<Order>) => void;
   cancelOrder: (orderId: string) => void;
   getWaiterOrders: (waiterId: string) => Order[];
@@ -37,73 +30,35 @@ interface AppContextType {
   clearDeliverySoldOrders: (deliveryId: string) => void;
   clearKitchenCompletedOrders: () => void;
   broadcastMessage: (message: string) => void;
-  broadcastData: { message: string; timestamp: number } | null;
+  broadcastData: BroadcastMessageType | null;
   clearBroadcast: () => void;
   clearArchivedOrders: () => void;
   clearArchivedOrdersByMonth: (monthKey: string) => void;
+  playPaymentNotification: () => void;
 }
 
-export const AppContext = createContext<AppContextType>({
-  role: null,
-  setRole: () => {},
-  orders: [],
-  archivedOrders: [],
-  menuItems: [],
-  addMenuItem: () => ({} as MenuItem),
-  updateMenuItem: () => {},
-  deleteMenuItem: () => {},
-  moveMenuItem: () => {},
-  toggleMenuItemAvailability: () => {},
-  addOrder: () => {},
-  updateOrder: () => {},
-  cancelOrder: () => {},
-  getWaiterOrders: () => [],
-  getDeliveryOrders: () => [],
-  archiveTodaysOrders: () => {},
-  clearWaiterSoldOrders: () => {},
-  clearWaiterCancelledOrders: () => {},
-  clearDeliverySoldOrders: () => {},
-  clearKitchenCompletedOrders: () => {},
-  broadcastMessage: () => {},
-  broadcastData: null,
-  clearBroadcast: () => {},
-  clearArchivedOrders: () => {},
-  clearArchivedOrdersByMonth: () => {},
-});
+export const AppContext = createContext<AppContextType>({} as AppContextType);
 
-const mapOrderDates = (order: any): Order => ({
-  ...order,
-  timestamp: new Date(order.timestamp),
-  lastUpdated: new Date(order.lastUpdated),
-  ...(order.acceptedAt && { acceptedAt: new Date(order.acceptedAt) }),
-  ...(order.deliveredAt && { deliveredAt: new Date(order.deliveredAt) }),
-});
-
-const triggerStorageEvent = (key: string, value: any) => {
-    if (typeof window !== 'undefined') {
-        localStorage.setItem(key, JSON.stringify(value));
-        window.dispatchEvent(
-            new StorageEvent('storage', {
-                key: key,
-                newValue: JSON.stringify(value),
-                storageArea: localStorage
-            })
-        );
-    }
-};
-
+const toDate = (timestamp: Timestamp | Date): Date => {
+  if (timestamp instanceof Timestamp) {
+    return timestamp.toDate();
+  }
+  return new Date(timestamp);
+}
 
 export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [role, setRoleState] = useState<UserRole | null>(null);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [archivedOrders, setArchivedOrders] = useState<Order[]>([]);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const { toast } = useToast();
+  const firestore = useFirestore();
+
+  // Sounds
   const [orderAudio, setOrderAudio] = useState<HTMLAudioElement | null>(null);
   const [broadcastAudio, setBroadcastAudio] = useState<HTMLAudioElement | null>(null);
   const [paymentAudio, setPaymentAudio] = useState<HTMLAudioElement | null>(null);
   const [logoutAudio, setLogoutAudio] = useState<HTMLAudioElement | null>(null);
-  const [broadcastData, setBroadcastData] = useState<{ message: string; timestamp: number } | null>(null);
+
+  const prevOrdersRef = useRef<Order[] | null>(null);
+  const isInitialLoadRef = useRef(true);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -126,74 +81,54 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const playPaymentNotification = useCallback(() => playAudio(paymentAudio), [playAudio, paymentAudio]);
   const playLogoutNotification = useCallback(() => playAudio(logoutAudio), [playAudio, logoutAudio]);
 
-  const loadDataFromStorage = useCallback((event?: StorageEvent) => {
-    try {
-        const storedRole = sessionStorage.getItem('userRole') as UserRole;
-        if (storedRole) setRoleState(storedRole);
+  // --- Firestore Data Hooks ---
+  const ordersQuery = useMemoFirebase(() => role ? query(collection(firestore, 'orders'), where('status', '!=', 'archived')) : null, [firestore, role]);
+  const { data: ordersData, isLoading: isLoadingOrders } = useCollection<Order>(ordersQuery);
 
-        const storedMenuItems = localStorage.getItem('sotos_menu_items');
-        const loadedMenuItems: MenuItem[] = storedMenuItems 
-            ? JSON.parse(storedMenuItems).map((item: any, index: number) => ({ ...item, order: item.order ?? index, isDisabled: item.isDisabled ?? false }))
-            : defaultMenuItems.map((item, index) => ({ ...item, order: index, isDisabled: false }));
-        setMenuItems(current => JSON.stringify(current) !== JSON.stringify(loadedMenuItems) ? loadedMenuItems : current);
-
-        const storedOrders = localStorage.getItem('sotos_orders');
-        const loadedOrders = storedOrders ? JSON.parse(storedOrders).map(mapOrderDates) : [];
-        setOrders(current => {
-            if (JSON.stringify(current) !== JSON.stringify(loadedOrders)) {
-                if (event && event.key === 'sotos_orders' && role === 'cocina' && loadedOrders.length > current.length) {
-                    playOrderNotification();
-                }
-                return loadedOrders;
-            }
-            return current;
-        });
-
-        const storedArchivedOrders = localStorage.getItem('sotos_archived_orders');
-        const loadedArchivedOrders = storedArchivedOrders ? JSON.parse(storedArchivedOrders).map(mapOrderDates) : [];
-        setArchivedOrders(current => JSON.stringify(current) !== JSON.stringify(loadedArchivedOrders) ? loadedArchivedOrders : current);
-        
-        const storedBroadcast = localStorage.getItem('sotos_broadcast_message');
-        const loadedBroadcast = storedBroadcast ? JSON.parse(storedBroadcast) : null;
-        setBroadcastData(current => {
-             if (JSON.stringify(current) !== JSON.stringify(loadedBroadcast)) {
-                if (event && event.key === 'sotos_broadcast_message' && loadedBroadcast && current?.timestamp !== loadedBroadcast.timestamp && role !== 'jefe') {
-                  playBroadcastNotification();
-                }
-                return loadedBroadcast;
-            }
-            return current;
-        });
-
-    } catch (error) {
-        console.error("Failed to load data from localStorage", error);
-    }
-  }, [role, playOrderNotification, playBroadcastNotification]);
-
-  useEffect(() => {
-    const storedPasswords = localStorage.getItem('sotos_passwords');
-    if (!storedPasswords) {
-      localStorage.setItem('sotos_passwords', JSON.stringify(defaultPasswords));
-    }
-    loadDataFromStorage();
-  }, [loadDataFromStorage]);
-
-  useEffect(() => {
-    const handleStorageChange = (event: StorageEvent) => {
-        loadDataFromStorage(event);
-    };
-    window.addEventListener('storage', handleStorageChange);
-
-    const interval = setInterval(() => {
-        loadDataFromStorage();
-    }, 5000); 
-
-    return () => {
-        window.removeEventListener('storage', handleStorageChange);
-        clearInterval(interval);
-    };
-  }, [loadDataFromStorage]);
+  const archivedOrdersQuery = useMemoFirebase(() => role ? query(collection(firestore, 'orders'), where('status', '==', 'archived')) : null, [firestore, role]);
+  const { data: archivedOrdersData } = useCollection<Order>(archivedOrdersQuery);
   
+  const menuItemsQuery = useMemoFirebase(() => query(collection(firestore, 'menu_items'), orderBy('order')), [firestore]);
+  const { data: menuItems, isLoading: isLoadingMenuItems } = useCollection<MenuItem>(menuItemsQuery);
+
+  const broadcastDocRef = useMemoFirebase(() => doc(firestore, 'broadcast', 'message'), [firestore]);
+  const { data: broadcastData, isLoading: isBroadcastLoading } = useDoc<BroadcastMessageType>(broadcastDocRef);
+  const prevBroadcastTimestamp = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (isInitialLoadRef.current) {
+        return;
+    }
+
+    if (ordersData && prevOrdersRef.current) {
+        if (ordersData.length > prevOrdersRef.current.length && role === 'cocina') {
+            playOrderNotification();
+        }
+    }
+  }, [ordersData, role, playOrderNotification]);
+
+  useEffect(() => {
+    if (broadcastData?.timestamp && !isBroadcastLoading) {
+      const newTimestamp = toDate(broadcastData.timestamp).getTime();
+      if (prevBroadcastTimestamp.current !== null && newTimestamp > prevBroadcastTimestamp.current && role !== 'jefe') {
+        playBroadcastNotification();
+      }
+      prevBroadcastTimestamp.current = newTimestamp;
+    }
+  }, [broadcastData, isBroadcastLoading, role, playBroadcastNotification]);
+  
+  useEffect(() => {
+    prevOrdersRef.current = ordersData;
+  }, [ordersData]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+        isInitialLoadRef.current = false;
+    }, 2000);
+    return () => clearTimeout(timer);
+  },[]);
+
+
   const setRole = (newRole: UserRole | null) => {
     setRoleState(newRole);
     if (newRole) {
@@ -204,158 +139,123 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const addMenuItem = (item: Omit<MenuItem, 'id' | 'order'>): MenuItem => {
+  useEffect(() => {
+    const storedRole = sessionStorage.getItem('userRole') as UserRole;
+    if (storedRole) {
+      setRoleState(storedRole);
+    }
+  }, []);
+
+
+  const addMenuItem = async (item: Omit<MenuItem, 'id' | 'order'>): Promise<MenuItem | undefined> => {
+    if(!menuItems) return;
     const maxOrder = menuItems.length > 0 ? Math.max(...menuItems.map(item => item.order)) : -1;
-    const newItem: MenuItem = {
+    const newItem: Omit<MenuItem, 'id'> = {
       ...item,
-      id: item.name.toLowerCase().replace(/\s+/g, '_') + '_' + Date.now(),
       order: maxOrder + 1,
       isDisabled: false,
     };
-    setMenuItems(prev => {
-        const newItems = [...prev, newItem];
-        triggerStorageEvent('sotos_menu_items', newItems);
-        return newItems;
-    });
-    toast({ title: 'Éxito', description: 'El producto ha sido añadido al menú.'});
-    return newItem;
+    try {
+        const docRef = await addDoc(collection(firestore, 'menu_items'), newItem);
+        toast({ title: 'Éxito', description: 'El producto ha sido añadido al menú.'});
+        return { ...newItem, id: docRef.id };
+    } catch (error) {
+        console.error("Error adding menu item: ", error);
+        toast({ title: 'Error', description: 'No se pudo añadir el producto.', variant: 'destructive'});
+    }
   };
 
   const updateMenuItem = (itemId: string, updates: Partial<MenuItem>) => {
-    setMenuItems(prev => {
-        const newItems = prev.map(item => item.id === itemId ? { ...item, ...updates } : item);
-        triggerStorageEvent('sotos_menu_items', newItems);
-        return newItems;
+    const docRef = doc(firestore, 'menu_items', itemId);
+    setDoc(docRef, updates, { merge: true }).then(() => {
+        toast({ title: 'Éxito', description: 'El producto ha sido actualizado.'});
+    }).catch(error => {
+        console.error("Error updating menu item: ", error);
+        toast({ title: 'Error', description: 'No se pudo actualizar el producto.', variant: 'destructive'});
     });
-    toast({ title: 'Éxito', description: 'El producto ha sido actualizado.'});
   };
 
   const deleteMenuItem = (itemId: string) => {
-    setMenuItems(prev => {
-        const newItems = prev.filter(item => item.id !== itemId);
-        triggerStorageEvent('sotos_menu_items', newItems);
-        return newItems;
+    deleteDoc(doc(firestore, 'menu_items', itemId)).then(() => {
+        toast({ title: 'Éxito', description: 'El producto ha sido eliminado del menú.'});
+    }).catch(error => {
+        console.error("Error deleting menu item: ", error);
+        toast({ title: 'Error', description: 'No se pudo eliminar el producto.', variant: 'destructive'});
     });
-    toast({ title: 'Éxito', description: 'El producto ha sido eliminado del menú.'});
   };
 
-  const moveMenuItem = (itemId: string, direction: 'up' | 'down') => {
-    setMenuItems(prevItems => {
-        const items = [...prevItems].sort((a, b) => a.order - b.order);
-        const currentIndex = items.findIndex(item => item.id === itemId);
+  const moveMenuItem = async (itemId: string, direction: 'up' | 'down') => {
+    if (!menuItems) return;
+    const sortedItems = [...menuItems].sort((a,b) => a.order - b.order);
+    const currentIndex = sortedItems.findIndex(item => item.id === itemId);
 
-        if (currentIndex === -1) return prevItems;
+    if (currentIndex === -1) return;
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= sortedItems.length) return;
 
-        const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    const batch = writeBatch(firestore);
+    const currentItemRef = doc(firestore, 'menu_items', sortedItems[currentIndex].id);
+    const targetItemRef = doc(firestore, 'menu_items', sortedItems[targetIndex].id);
 
-        if (targetIndex < 0 || targetIndex >= items.length) return prevItems;
-        
-        const newItems = [...items];
-        const currentItemOrder = newItems[currentIndex].order;
-        newItems[currentIndex].order = newItems[targetIndex].order;
-        newItems[targetIndex].order = currentItemOrder;
+    batch.update(currentItemRef, { order: sortedItems[targetIndex].order });
+    batch.update(targetItemRef, { order: sortedItems[currentIndex].order });
 
-        triggerStorageEvent('sotos_menu_items', newItems);
-        return newItems;
-    });
+    await batch.commit();
   };
 
   const toggleMenuItemAvailability = (itemId: string) => {
-    setMenuItems(prev => {
-        const newItems = prev.map(item => 
-            item.id === itemId ? { ...item, isDisabled: !item.isDisabled } : item
-        );
-        triggerStorageEvent('sotos_menu_items', newItems);
-        return newItems;
-    });
+    if (!menuItems) return;
+    const item = menuItems.find(i => i.id === itemId);
+    if(item) {
+        updateMenuItem(itemId, { isDisabled: !item.isDisabled });
+    }
   };
   
   const broadcastMessage = (message: string) => {
-    const newBroadcast = { message, timestamp: Date.now() };
-    triggerStorageEvent('sotos_broadcast_message', newBroadcast);
-    playBroadcastNotification();
+    setDoc(broadcastDocRef, { message, timestamp: serverTimestamp() });
   };
 
   const clearBroadcast = () => {
-    setBroadcastData(null);
-    localStorage.removeItem('sotos_broadcast_message');
+    setDoc(broadcastDocRef, { message: '', timestamp: serverTimestamp() });
   }
 
-
-  const addOrder = (orderData: Omit<Order, 'id' | 'timestamp' | 'lastUpdated'|'isPaid'>) => {
-    const newOrder: Order = {
-      ...orderData,
-      id: (Math.random() * 1000000).toFixed(0),
-      timestamp: new Date(),
-      lastUpdated: new Date(),
-      isPaid: orderData.status === 'pagada',
+  const addOrder = (orderData: Omit<Order, 'id' | 'timestamp' | 'lastUpdated'>) => {
+    const newOrder = {
+        ...orderData,
+        timestamp: serverTimestamp(),
+        lastUpdated: serverTimestamp(),
     };
-    if (newOrder.isPaid) {
-        newOrder.status = 'pendiente';
-        if(role !== 'jefe') playPaymentNotification();
-    }
-
-    setOrders(prevOrders => {
-        const newOrders = [...prevOrders, newOrder];
-        triggerStorageEvent('sotos_orders', newOrders);
-        return newOrders;
+    addDoc(collection(firestore, 'orders'), newOrder).then(() => {
+        if(role !== 'jefe' && newOrder.isPaid) playPaymentNotification();
+    }).catch(error => {
+        console.error("Error adding order: ", error);
+        toast({ title: 'Error', description: 'No se pudo crear la orden.', variant: 'destructive'});
     });
-
-    if (role !== 'cocina') {
-        playOrderNotification();
-    }
   };
 
   const updateOrder = (orderId: string, updates: Partial<Omit<Order, 'id'>>) => {
-    let originalOrder: Order | undefined;
-    setOrders(prevOrders => {
-      originalOrder = prevOrders.find(order => order.id === orderId);
-      if (!originalOrder) return prevOrders;
+    const orderDoc = doc(firestore, 'orders', orderId);
+    let finalUpdates: Partial<Omit<Order, 'id' | 'timestamp' | 'lastUpdated'>> & { lastUpdated: Timestamp} = { ...updates, lastUpdated: serverTimestamp() as Timestamp};
+    
+    const originalOrder = ordersData?.find(o => o.id === orderId);
 
-      const updatedOrder = { ...originalOrder, ...updates, lastUpdated: new Date() };
-      
-      const wasPaidInThisUpdate = !originalOrder.isPaid && updates.isPaid;
-      if(wasPaidInThisUpdate) {
-        if(role !== 'jefe') playPaymentNotification();
-      }
-      
-      if (updates.isPaid && updatedOrder.status === 'entregada') {
-        updatedOrder.status = 'pagada';
-      }
-
-      if (updates.status === 'entregada' && updatedOrder.isPaid) {
-        updatedOrder.status = 'pagada';
-      }
-      
-      if (updates.status === 'pagada') {
-         updatedOrder.isPaid = true;
-         if (originalOrder.status === 'entregada' || originalOrder.status === 'lista_para_entrega' || originalOrder.status === 'en_camino') {
-            updatedOrder.status = 'pagada';
-         } else {
-            updatedOrder.status = originalOrder.status; 
-         }
-      }
-
-      const newOrders = prevOrders.map(order =>
-        order.id === orderId
-          ? updatedOrder
-          : order
-      );
-
-      triggerStorageEvent('sotos_orders', newOrders);
-      return newOrders;
-    });
-
-    if (originalOrder && updates.status && originalOrder.status !== updates.status) {
-      const newStatus = updates.status as OrderStatus;
-      
-      const meseroRoles: UserRole[] = ['mesero', 'jefe'];
-      const deliveryRoles: UserRole[] = ['delivery', 'jefe'];
-
-      if (newStatus === 'lista_para_entrega') {
-         playOrderNotification();
-      }
+    if (originalOrder) {
+        const wasPaidInThisUpdate = !originalOrder.isPaid && updates.isPaid;
+        if(wasPaidInThisUpdate && role !== 'jefe') {
+            playPaymentNotification();
+        }
+        if (updates.isPaid && finalUpdates.status === 'entregada') {
+            finalUpdates.status = 'pagada';
+        }
+        if (updates.status === 'pagada') {
+            finalUpdates.isPaid = true;
+        }
     }
+
+    setDoc(orderDoc, finalUpdates, { merge: true }).catch(error => {
+        console.error("Error updating order: ", error);
+        toast({ title: 'Error', description: 'No se pudo actualizar la orden.', variant: 'destructive'});
+    });
   };
   
   const cancelOrder = (orderId: string) => {
@@ -363,48 +263,61 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const getWaiterOrders = (waiterId: string) => {
-    return orders.filter(order => order.waiterId === waiterId);
+    return (ordersData || []).filter(order => order.waiterId === waiterId);
   };
   
   const getDeliveryOrders = (deliveryId: string) => {
-    return orders.filter(order => order.waiterId === deliveryId);
+    return (ordersData || []).filter(order => order.waiterId === deliveryId);
   };
 
-  const archiveTodaysOrders = () => {
+  const archiveTodaysOrders = async () => {
+    if (!ordersData) return;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    const statusesToArchive: OrderStatus[] = ['pagada', 'cancelada'];
+    const statusesToArchive = ['pagada', 'cancelada'];
     
-    const ordersToArchive = orders.filter(order => {
-        const orderDate = new Date(order.lastUpdated);
+    const ordersToArchive = ordersData.filter(order => {
+        const orderDate = toDate(order.lastUpdated);
         return statusesToArchive.includes(order.status) && orderDate >= today;
     });
-
-    const remainingOrders = orders.filter(order => !ordersToArchive.some(archived => archived.id === order.id));
-
-    setArchivedOrders(prevArchived => {
-        const newArchived = [...prevArchived, ...ordersToArchive];
-        triggerStorageEvent('sotos_archived_orders', newArchived);
-        return newArchived;
-    });
-    setOrders(remainingOrders);
-    triggerStorageEvent('sotos_orders', remainingOrders);
     
+    if (ordersToArchive.length === 0) {
+        toast({ title: "Nada que archivar", description: "No hay órdenes completadas o canceladas hoy." });
+        return;
+    }
+
+    const batch = writeBatch(firestore);
+    ordersToArchive.forEach(order => {
+        const docRef = doc(firestore, 'orders', order.id);
+        batch.update(docRef, { status: 'archived' });
+    });
+
+    await batch.commit();
     toast({
       title: "Cierre del Día Realizado",
       description: `${ordersToArchive.length} órdenes han sido archivadas en el historial.`,
     });
   };
 
+  const clearOrdersByIdAndStatus = async (ownerId: string, statuses: string[], idField: 'waiterId' | 'deliveryId') => {
+      if(!ordersData) return;
+
+      const ordersToClear = ordersData.filter(order => order[idField] === ownerId && statuses.includes(order.status));
+
+      if(ordersToClear.length > 0) {
+        const batch = writeBatch(firestore);
+        ordersToClear.forEach(order => {
+            const docRef = doc(firestore, 'orders', order.id);
+            batch.delete(docRef);
+        });
+        await batch.commit();
+      }
+  }
+
+
   const clearWaiterSoldOrders = (waiterId: string) => {
-    setOrders(prevOrders => {
-      const newOrders = prevOrders.filter(
-        order => !(order.waiterId === waiterId && order.status === 'pagada')
-      );
-      triggerStorageEvent('sotos_orders', newOrders);
-      return newOrders;
-    });
+    clearOrdersByIdAndStatus(waiterId, ['pagada'], 'waiterId');
     toast({
       title: "Servicio Finalizado",
       description: "Tus ventas del día han sido archivadas. ¡Listo para un nuevo día!",
@@ -412,13 +325,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
   
   const clearWaiterCancelledOrders = (waiterId: string) => {
-    setOrders(prevOrders => {
-      const newOrders = prevOrders.filter(
-        order => !(order.waiterId === waiterId && order.status === 'cancelada')
-      );
-      triggerStorageEvent('sotos_orders', newOrders);
-      return newOrders;
-    });
+    clearOrdersByIdAndStatus(waiterId, ['cancelada'], 'waiterId');
     toast({
       title: "Historial Limpio",
       description: "Tus órdenes canceladas han sido eliminadas del historial.",
@@ -426,77 +333,88 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const clearDeliverySoldOrders = (deliveryId: string) => {
-    setOrders(prevOrders => {
-      const newOrders = prevOrders.filter(
-        order => !(order.waiterId === deliveryId && order.status === 'pagada')
-      );
-      triggerStorageEvent('sotos_orders', newOrders);
-      return newOrders;
-    });
+    clearOrdersByIdAndStatus(deliveryId, ['pagada'], 'waiterId');
     toast({
       title: "Servicio Finalizado",
       description: "Tus entregas del día han sido archivadas. ¡Listo para un nuevo día!",
     });
   };
   
-  const clearKitchenCompletedOrders = () => {
-    const completedStatuses: OrderStatus[] = ['lista_para_entrega', 'en_camino', 'entregada', 'pagada'];
-    setOrders(prevOrders => {
-        const newOrders = prevOrders.filter(order => !completedStatuses.includes(order.status));
-        triggerStorageEvent('sotos_orders', newOrders);
-        return newOrders;
-    });
+  const clearKitchenCompletedOrders = async () => {
+    if(!ordersData) return;
+    const completedStatuses = ['lista_para_entrega', 'en_camino', 'entregada', 'pagada'];
+    const ordersToClear = ordersData.filter(order => completedStatuses.includes(order.status));
+    
+    if(ordersToClear.length > 0) {
+        const batch = writeBatch(firestore);
+        ordersToClear.forEach(order => {
+            const docRef = doc(firestore, 'orders', order.id);
+            batch.delete(docRef);
+        });
+        await batch.commit();
+    }
     toast({
       title: "Servicio de Cocina Finalizado",
       description: "El historial de pedidos preparados ha sido limpiado.",
     });
   };
 
-  const clearArchivedOrders = () => {
-    setArchivedOrders([]);
-    triggerStorageEvent('sotos_archived_orders', []);
+  const clearArchivedOrders = async () => {
+    if (!archivedOrdersData) return;
+    const batch = writeBatch(firestore);
+    archivedOrdersData.forEach(order => {
+        batch.delete(doc(firestore, 'orders', order.id));
+    });
+    await batch.commit();
     toast({
         title: "Historial de Ventas Eliminado",
         description: "Todos los registros de ventas archivadas han sido eliminados.",
     });
   };
 
-  const clearArchivedOrdersByMonth = (monthKey: string) => {
+  const clearArchivedOrdersByMonth = async (monthKey: string) => {
+    if (!archivedOrdersData) return;
     const [year, month] = monthKey.split('-').map(Number);
     
-    setArchivedOrders(prevArchived => {
-        const filtered = prevArchived.filter(order => {
-            const orderDate = isDate(order.lastUpdated) ? order.lastUpdated : parseISO(order.lastUpdated as unknown as string);
-            if (!isDate(orderDate)) return true; // keep if date is invalid
-            return !(getYear(orderDate) === year && getMonth(orderDate) === month);
-        });
+    const ordersToDelete = archivedOrdersData.filter(order => {
+        const orderDate = toDate(order.lastUpdated);
+        return orderDate.getFullYear() === year && orderDate.getMonth() === month;
+    });
 
-        toast({
-            title: 'Historial Mensual Eliminado',
-            description: `Se han eliminado los registros de ventas para el mes seleccionado.`
+    if(ordersToDelete.length > 0) {
+        const batch = writeBatch(firestore);
+        ordersToDelete.forEach(order => {
+            batch.delete(doc(firestore, 'orders', order.id));
         });
-        
-        triggerStorageEvent('sotos_archived_orders', filtered);
-        return filtered;
+        await batch.commit();
+    }
+    toast({
+        title: 'Historial Mensual Eliminado',
+        description: `Se han eliminado los registros de ventas para el mes seleccionado.`
     });
   };
 
-  const contextValue = {
+  const contextValue: AppContextType = {
     role,
     setRole,
-    orders,
-    archivedOrders,
+    orders: ordersData,
+    archivedOrders: archivedOrdersData,
     menuItems,
+    isLoadingOrders,
+    isLoadingMenuItems,
+
     addMenuItem,
     updateMenuItem,
     deleteMenuItem,
     moveMenuItem,
     toggleMenuItemAvailability,
+
     addOrder,
     updateOrder,
     cancelOrder,
     getWaiterOrders,
     getDeliveryOrders,
+
     archiveTodaysOrders,
     clearWaiterSoldOrders,
     clearWaiterCancelledOrders,
@@ -507,20 +425,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     clearBroadcast,
     clearArchivedOrders,
     clearArchivedOrdersByMonth,
-  };
-
-  const notificationContextValue = {
-    playOrderNotification,
-    playBroadcastNotification,
     playPaymentNotification,
-    playLogoutNotification,
   };
 
   return (
     <AppContext.Provider value={contextValue}>
-      <NotificationContext.Provider value={notificationContextValue}>
         {children}
-      </NotificationContext.Provider>
     </AppContext.Provider>
   );
 };
